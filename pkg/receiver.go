@@ -95,7 +95,7 @@ func NewWebRTCReceiver(ctx context.Context, track *webrtc.Track, config RouterCo
 		lastNack:       time.Now().Unix(),
 		maxNackTime:    config.MaxNackTime,
 	}
-
+	//todo: layer参数？？？
 	switch w.track.RID() {
 	case quarterResolution:
 		w.spatialLayer = 1
@@ -203,9 +203,9 @@ func (w *WebRTCReceiver) receiveRTP() {
 			log.Errorf("rtp err => %v", err)
 			continue
 		}
-
+		//pkt添加到buffer
 		w.buffer.Push(pkt)
-
+		//todo：如果开启transport-cc，则则存储到达时间 => 需要进一步解析
 		if w.feedback == webrtc.TypeRTCPFBTransportCC {
 			// store arrival time
 			timestampUs := time.Now().UnixNano() / 1000
@@ -258,6 +258,7 @@ func (w *WebRTCReceiver) bufferRtcpLoop() {
 	}
 }
 
+//接收端带宽估计并反馈到发送端
 func (w *WebRTCReceiver) rembLoop(cycle int) {
 	defer w.wg.Done()
 	if cycle <= 0 {
@@ -271,6 +272,12 @@ func (w *WebRTCReceiver) rembLoop(cycle int) {
 			// only calc video recently
 			w.lostRate, w.bandwidth = w.buffer.GetLostRateBandwidth(uint64(cycle))
 			var bw uint64
+			/*
+				基于丢包的带宽估计(kb)
+				1、首先当启动时，此时没有带宽，则以最大带宽进行传输；
+				2、当丢包率大于10%时则认为网络有拥塞，此时根据丢包率降低带宽，丢包率越高带宽降的越多；
+				3、当丢包率在10%内时则网络状态良好，此时将带宽提升到之前的两倍；
+			*/
 			switch {
 			case w.lostRate == 0 && w.bandwidth == 0:
 				bw = w.maxBandwidth
@@ -283,7 +290,8 @@ func (w *WebRTCReceiver) rembLoop(cycle int) {
 			if bw > w.maxBandwidth && w.maxBandwidth > 0 {
 				bw = w.maxBandwidth
 			}
-
+			//这是带宽估计的早期实现，评估的带宽结果通过RTCP REMB消息反馈到发送端
+			//在新近的WebRTC的实现中，所有的带宽估计都放在了发送端
 			remb := &rtcp.ReceiverEstimatedMaximumBitrate{
 				SenderSSRC: w.buffer.GetSSRC(),
 				Bitrate:    bw,
@@ -297,6 +305,7 @@ func (w *WebRTCReceiver) rembLoop(cycle int) {
 	}
 }
 
+//计算transport-cc-feedback
 func (w *WebRTCReceiver) tccLoop(cycle int) {
 	defer w.wg.Done()
 	feedbackPacketCount := uint8(0)
@@ -310,6 +319,7 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 			}
 
 			// get all rtp extension infos from channel
+			//将一段时间内的所有媒体包信息按照sequence-num排序
 			rtpExtInfo := make(map[uint16]int64)
 			for i := 0; i < cp; i++ {
 				info := <-w.rtpExtInfoChan
@@ -335,6 +345,8 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 			}
 
 			// force small deta rtcp.RunLengthChunk
+			//transport-cc载体数据(表示媒体包到达状态的结构)编码格式选择RunLengthChunk方式
+			//force small deta rtcp.RunLengthChunk
 			chunk := &rtcp.RunLengthChunk{
 				Type:               rtcp.TypeTCCRunLengthChunk,
 				PacketStatusSymbol: rtcp.TypeTCCPacketReceivedSmallDelta,
@@ -343,6 +355,7 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 
 			// gather deltas
 			var recvDeltas []*rtcp.RecvDelta
+			//基准时间，计算该包中每个媒体包的到达时间都要基于这个基准时间计算
 			var refTime uint32
 			var lastTS int64
 			var baseTimeTicks int64
@@ -350,6 +363,7 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 				ts, ok := rtpExtInfo[i]
 
 				// lost packet
+				//如果对应位置没有媒体包信息，说明对应序列位置包丢失
 				if !ok {
 					recvDelta := &rtcp.RecvDelta{
 						Type: rtcp.TypeTCCPacketReceivedSmallDelta,
@@ -367,7 +381,7 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 				if baseTimeTicks == 0 {
 					baseTimeTicks = (ts % timeWrapPeriodUs) / baseScaleFactor
 				}
-
+				//将所有后续包的时间戳减去第一个包的时间戳，得到delta
 				var delta int64
 				if lastTS == ts {
 					delta = ts%timeWrapPeriodUs - baseTimeTicks*baseScaleFactor
@@ -394,12 +408,12 @@ func (w *WebRTCReceiver) tccLoop(cycle int) {
 				},
 				// SenderSSRC:         w.ssrc,
 				MediaSSRC:          w.track.SSRC(),
-				BaseSequenceNumber: minTSN,
-				PacketStatusCount:  maxTSN - minTSN + 1,
-				ReferenceTime:      refTime,
-				FbPktCount:         feedbackPacketCount,
-				RecvDeltas:         recvDeltas,
-				PacketChunks:       []rtcp.PacketStatusChunk{chunk},
+				BaseSequenceNumber: minTSN,                          //当前媒体包序列开始位置
+				PacketStatusCount:  maxTSN - minTSN + 1,             //当前媒体序列包总数
+				ReferenceTime:      refTime,                         //基准时间，计算该包中每个媒体包的到达时间都要基于这个基准时间计算
+				FbPktCount:         feedbackPacketCount,             //第几个transport-cc包
+				RecvDeltas:         recvDeltas,                      //该媒体包计算的所有时间差序列
+				PacketChunks:       []rtcp.PacketStatusChunk{chunk}, //媒体包信息编码类型(共两种，这里选择RunLengthChunk方式)
 			}
 			rtcpTCC.Header.Length = rtcpTCC.Len()/4 - 1
 			w.rtcpCh <- rtcpTCC
@@ -434,6 +448,7 @@ func startVideoReceiver(w *WebRTCReceiver, wStart chan struct{}, config RouterCo
 	}()
 
 	w.rtcpCh = make(chan rtcp.Packet, maxSize)
+	//为receiver设置buffer
 	w.buffer = NewBuffer(w.track.SSRC(), w.track.PayloadType(), BufferOptions{
 		BufferTime: config.Video.MaxBufferTime,
 	})
@@ -445,11 +460,13 @@ func startVideoReceiver(w *WebRTCReceiver, wStart chan struct{}, config RouterCo
 			log.Debugf("Setting feedback %s", webrtc.TypeRTCPFBTransportCC)
 			w.feedback = webrtc.TypeRTCPFBTransportCC
 			w.wg.Add(1)
+			//transport-cc策略
 			go w.tccLoop(config.Video.TCCCycle)
 		case webrtc.TypeRTCPFBGoogREMB:
 			log.Debugf("Setting feedback %s", webrtc.TypeRTCPFBGoogREMB)
 			w.feedback = webrtc.TypeRTCPFBGoogREMB
 			w.wg.Add(1)
+			//丢包统计策略REMB
 			go w.rembLoop(config.Video.REMBCycle)
 		}
 	}
@@ -459,11 +476,14 @@ func startVideoReceiver(w *WebRTCReceiver, wStart chan struct{}, config RouterCo
 	}
 	// Start rtcp reader from track
 	w.wg.Add(1)
+	//接收rtp包，统计transport-cc
 	go w.receiveRTP()
 	// Start buffer loop
 	w.wg.Add(1)
+	//buffer统计的rctp发送，如nack，每一组包统计一次
 	go w.bufferRtcpLoop()
 	// Receiver start loops done, send start signal
+	//发送给所有订阅者
 	go w.fwdRTP()
 	wStart <- struct{}{}
 	w.wg.Wait()
@@ -501,6 +521,7 @@ func startAudioReceiver(w *WebRTCReceiver, wStart chan struct{}) {
 			}
 		}
 	}()
+	//音频接收较简单，直接转发即可
 	go w.fwdRTP()
 	wStart <- struct{}{}
 	w.wg.Wait()

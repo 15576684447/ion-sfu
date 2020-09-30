@@ -59,6 +59,7 @@ func NewSFU(c Config) *SFU {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Configure required extensions for simulcast
+	//增加simulcast所需要的扩展头
 	sdes, _ := url.Parse(sdp.SDESRTPStreamIDURI)
 	sdedMid, _ := url.Parse(sdp.SDESMidURI)
 	exts := []sdp.ExtMap{
@@ -111,6 +112,7 @@ func NewSFU(c Config) *SFU {
 	}
 
 	// Configure bandwidth estimation support
+	//增加transport-cc带宽估计所需要的扩展头
 	if c.Router.Video.TCCCycle > 0 {
 		rtcpfb = append(rtcpfb, webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC})
 		transportCCURL, _ := url.Parse(sdp.TransportCCURI)
@@ -122,7 +124,7 @@ func NewSFU(c Config) *SFU {
 		}
 		w.setting.AddSDPExtensions(webrtc.SDPSectionVideo, exts)
 	}
-
+	//REMB策略配置
 	if c.Router.Video.REMBCycle > 0 {
 		rtcpfb = append(rtcpfb, webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBGoogREMB})
 	}
@@ -170,7 +172,7 @@ func (s *SFU) NewWebRTCTransport(sid string, me webrtc.MediaEngine) (*WebRTCTran
 	if session == nil {
 		session = s.newSession(sid)
 	}
-
+	//todo: sessionID作为房间管理的单位？？？
 	t, err := NewWebRTCTransport(s.ctx, session, me, s.webrtc)
 	if err != nil {
 		return nil, err

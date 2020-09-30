@@ -416,8 +416,11 @@ func main() {
 
 	var err error
 
-	log.Infof("Listening at https://[%s]", addr)
-	err = http.ListenAndServeTLS(addr, "cert.pem", "key.pem", nil)
+	//log.Infof("Listening at https://[%s]", addr)
+	//err = http.ListenAndServeTLS(addr, "cert.pem", "key.pem", nil)
+
+	log.Infof("Listening at http://[%s]", addr)
+	err = http.ListenAndServe(addr, nil)
 
 	if err != nil {
 		panic(err)

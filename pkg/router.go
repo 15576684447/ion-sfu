@@ -74,11 +74,11 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 		sender Sender
 		ssrc   uint32
 	)
-
+	//如果是 SimpleRouter 模式，则直接选择第一个pub流进行订阅
 	if r.kind == SimpleRouter {
 		recv = r.receivers[0]
 		ssrc = recv.Track().SSRC()
-	} else {
+	} else {//todo: 如果是 SimulcastRouter 模式，此处并没有选择最佳流的逻辑实现？？？
 		for _, rcv := range r.receivers {
 			recv = rcv
 			if !r.config.Simulcast.BestQualityFirst && rcv != nil {
@@ -100,6 +100,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	pt := to[0].PayloadType
 	label := inTrack.Label()
 	// Simulcast omits stream id, use transport label to keep all tracks under same stream
+	//todo: SimulcastRouter会忽略streamID？？？
 	if r.kind == SimulcastRouter {
 		label = p.label
 	}
@@ -128,6 +129,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 		// We delay sending RTP here to avoid the issue.
 		// https://bugs.chromium.org/p/webrtc/issues/detail?id=10139
 		time.Sleep(500 * time.Millisecond)
+		//将sender添加到对应的receiver，即订阅该receiver
 		recv.AddSender(sender)
 	}()
 	return nil

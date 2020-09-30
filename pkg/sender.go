@@ -32,7 +32,7 @@ type WebRTCSender struct {
 	cancel         context.CancelFunc
 	sender         *webrtc.RTPSender
 	track          *webrtc.Track
-	router         Router
+	router         Router //RTCSender中需要添加router对象的原因：sender接收的rtcp需要发送到receiver上游，需要获取其所在的router
 	maxBitrate     uint64
 	target         uint64
 	currentLayer   uint8
@@ -134,19 +134,21 @@ func (s *WebRTCSender) receiveRTCP() {
 				continue
 			}
 			switch pkt := pkt.(type) {
-			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest://PLI和RIR直接透传
 				if err := recv.WriteRTCP(pkt); err != nil {
 					log.Errorf("writing RTCP err %v", err)
 				}
-			case *rtcp.TransportLayerNack:
+			case *rtcp.TransportLayerNack://收到NACK时，在receiver的buffer中找到对应的pkt后重发
 				log.Tracef("router got nack: %+v", pkt)
 				for _, pair := range pkt.Nacks {
-					bufferPkt := recv.GetPacket(pair.PacketID)
+					bufferPkt := recv.GetPacket(pair.PacketID)//在buffer中查找丢失包
+					//如果找到，则取出pkt重发
 					if bufferPkt != nil {
 						// We found the packet in the buffer, resend to sub
 						s.WriteRTP(bufferPkt)
 						continue
 					}
+					//如果没找到，则将NACK发送到上游
 					// Packet not found, request from receivers
 					nack := &rtcp.TransportLayerNack{
 						// origin ssrc

@@ -239,12 +239,14 @@ func (s *WebRTCSimulcastSender) receiveRTCP() {
 			log.Errorf("rtcp err => %v", err)
 			continue
 		}
-
+		//处理simulcast的rtcp
 		for _, pkt := range pkts {
+			//获取对应layer的receiver
 			recv := s.router.GetReceiver(s.currentSpatialLayer)
 			if recv == nil {
 				continue
 			}
+			//todo: lSSRC是啥意思？？？
 			switch pkt := pkt.(type) {
 			case *rtcp.PictureLossIndication:
 				pkt.MediaSSRC = s.lSSRC

@@ -9,6 +9,7 @@ import (
 
 // Session represents a set of transports. Transports inside a session
 // are automatically subscribed to each other.
+//todo: session是若干个transports的集合，session内的transports会自动订阅其他transport的流
 type Session struct {
 	id             string
 	mu             sync.RWMutex

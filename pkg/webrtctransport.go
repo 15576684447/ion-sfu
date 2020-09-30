@@ -20,7 +20,7 @@ const (
 type WebRTCTransportConfig struct {
 	configuration webrtc.Configuration
 	setting       webrtc.SettingEngine
-	router        RouterConfig
+	router        RouterConfig //媒体控制策略
 }
 
 // WebRTCTransport represents a sfu peer connection
@@ -62,9 +62,9 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 	}
 
 	// Subscribe to existing transports
-	for _, t := range session.Transports() {
-		for _, router := range t.Routers() {
-			err := router.AddSender(p)
+	for _, t := range session.Transports() {//获取session内的所有transports
+		for _, router := range t.Routers() {//todo:每个transport会维护一个router，该transport自己为pub端，其他transports为sub端
+			err := router.AddSender(p)//todo: 新加入的transport自动订阅session内的所有transport
 			// log.Infof("Init add router ssrc %d to %s", router.receivers[0].Track().SSRC(), p.id)
 			if err != nil {
 				log.Errorf("Error subscribing to router err: %v", err)
@@ -74,18 +74,22 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 	}
 
 	// Add transport to the session
-	session.AddTransport(p)
-
+	session.AddTransport(p)//该transport也加入到该session的transports集合
+	//todo: 为何OnTrack后，作为新增的receiver，已有的transports不会订阅？？？
 	pc.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
 		log.Debugf("Peer %s got remote track id: %s ssrc: %d rid :%s label: %s", p.id, track.ID(), track.SSRC(), track.RID(), track.Label())
 		recv := NewWebRTCReceiver(ctx, track, cfg.router)
 
 		if recv.Track().Kind() == webrtc.RTPCodecTypeVideo {
+			//视频需要发送rtcp包到上游
 			go p.sendRTCP(recv)
 		}
+		//todo: 如果是simulcast模式，会发送多个track，根据layer的值保存所有receiver
 		if router, ok := p.routers[track.ID()]; !ok {
-			if track.RID() != "" {
+			//如果该receiver对应的router不存在，则新建router
+			if track.RID() != "" {//如果是 SimulcastRouter 模式
 				router = newRouter(p.id, cfg.router, SimulcastRouter)
+				//todo: simulcast如何发送视频？？？
 				go func() {
 					// Send 3 big remb msgs to fwd all the tracks
 					ticker := time.NewTicker(1 * time.Second)
@@ -100,7 +104,7 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 						}
 					}
 				}()
-			} else {
+			} else { //如果是 SimpleRouter 模式
 				router = newRouter(p.id, cfg.router, SimpleRouter)
 			}
 			router.AddReceiver(recv)
