@@ -205,10 +205,27 @@ func (w *WebRTCReceiver) receiveRTP() {
 		}
 		//pkt添加到buffer
 		w.buffer.Push(pkt)
-		//todo：如果开启transport-cc，则则存储到达时间 => 需要进一步解析
+		//todo：如果开启transport-cc，则存储到达时间 => 需要进一步解析
 		if w.feedback == webrtc.TypeRTCPFBTransportCC {
 			// store arrival time
 			timestampUs := time.Now().UnixNano() / 1000
+			// TODO: 这里会请求url么??? 怎么个流程？？？
+			/*
+				todo:
+					假设同一个PeerConnection下，我们传输两个视频流A与B，它们的RTP包记为Ra(n)，Rb(n)，n表示sequence number，
+					这样我们观察同一个PeerConnection下，视频流按如下形式传输：
+					Ra(1),Ra(2),Rb(1),Rb(2),Ra(3),Ra(4),Rb(3),Rb(4)
+					在对某条PeerConnection进行带宽估计时，我们需要估计整条PeerConnection下所有视频流，而不是单独某个流。
+					这样为了做一个RTP session（传输层）级别的带宽估计，原有各个流的sequence number就不能满足我们需要了。
+					为此Transport-cc中，在RTP头部增加一个传输层扩展，用于记录transport sequence number，
+					同一个PeerConnection连接下的所有流的transport sequence number，使用统一的计数器进行计数，方便进行同一个PeerConnection下的带宽估计。
+					这里我们使用前面的例子，视频流A与B，它们的RTP包记为Ra(n，m)，Rb(n,m)，n表示sequence number，
+					m表示transport sequence number，这样同一个PeerConnection下，视频流按如下形式传输：
+					Ra(1,1),Ra(2,2),Rb(1,3),Rb(2,4),Ra(3,5),Ra(4,6),Rb(3,7),Rb(4,8)
+					总结：
+					TransportCCExtension主要是为了方便统计在同个pc上传输多个流时，使用统一的seq计数器，进而方便同个pc上的带宽估计
+
+			*/
 			rtpTCC := rtp.TransportCCExtension{}
 			err = rtpTCC.Unmarshal(pkt.GetExtension(tccExtMapID))
 			if err == nil {
