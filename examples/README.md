@@ -2,12 +2,12 @@
   Examples
 </h1>
 
-We've build an extensive collection of examples covering common use-cases. You can modify and extend these examples to quickly get started.
+We've built an extensive collection of examples covering common use-cases. You can modify and extend these examples to quickly get started.
+
+For more full featured examples see the [ion-examples](https://github.com/pion/ion-examples/tree/master/ion-sfu) repository.
 
 Please feel free to extend and add additional examples!
 
 ### Overview
-* [pub-sub-in-browser](pub-sub-in-browser): Demonstrates how you can publish and subscribe to a stream with ion-sfu from a browser.
-* [pub-from-browser](pub-from-browser): Demonstrates how you can publish a stream to ion-sfu from a browser.
-* [pub-from-disk](pub-from-disk): Demonstrates how to send video and/or audio to an ion-sfu from files on disk.
-* [sub-to-browser](sub-to-browser): Demonstrates how you can subscribe to a stream from ion-sfu.
+
+* [echotest](echotest): Demonstrates how to establish a connection to `ion-sfu` as well as publish and receive a video stream.

@@ -1,5 +1,7 @@
 package sfu
 
+//go:generate go run github.com/matryer/moq -out router_mock_test.generated.go . Router
+
 import (
 	"math/rand"
 	"sync"
@@ -17,10 +19,11 @@ const (
 // Router defines a track rtp/rtcp router
 type Router interface {
 	ID() string
+	Config() RouterConfig
 	AddReceiver(recv Receiver)
 	GetReceiver(layer uint8) Receiver
 	AddSender(p *WebRTCTransport) error
-	SwitchSpatialLayer(currentLayer, targetLayer uint8, sub Sender) bool
+	SwitchSpatialLayer(targetLayer uint8, sub Sender) bool
 }
 
 // RouterConfig defines router configurations
@@ -33,24 +36,30 @@ type RouterConfig struct {
 }
 
 type router struct {
-	tid       string
 	mu        sync.RWMutex
+	tid       string
 	kind      int
 	config    RouterConfig
+	streamID  string
 	receivers [3 + 1]Receiver
 }
 
 // newRouter for routing rtp/rtcp packets
-func newRouter(tid string, config RouterConfig, kind int) Router {
+func newRouter(tid, streamID string, config RouterConfig, kind int) Router {
 	return &router{
-		tid:    tid,
-		config: config,
-		kind:   kind,
+		tid:      tid,
+		kind:     kind,
+		config:   config,
+		streamID: streamID,
 	}
 }
 
 func (r *router) ID() string {
 	return r.tid
+}
+
+func (r *router) Config() RouterConfig {
+	return r.config
 }
 
 func (r *router) AddReceiver(recv Receiver) {
@@ -80,7 +89,9 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 		ssrc = recv.Track().SSRC()
 	} else {
 		for _, rcv := range r.receivers {
-			recv = rcv
+			if rcv != nil {
+				recv = rcv
+			}
 			if !r.config.Simulcast.BestQualityFirst && rcv != nil {
 				break
 			}
@@ -98,12 +109,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 		return errPtNotSupported
 	}
 	pt := to[0].PayloadType
-	label := inTrack.Label()
-	// Simulcast omits stream id, use transport label to keep all tracks under same stream
-	if r.kind == SimulcastRouter {
-		label = p.label
-	}
-	outTrack, err := p.pc.NewTrack(pt, ssrc, inTrack.ID(), label)
+	outTrack, err := p.pc.NewTrack(pt, ssrc, inTrack.ID(), inTrack.Label())
 	if err != nil {
 		return err
 	}
@@ -113,15 +119,16 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 		return err
 	}
 	if r.kind == SimulcastRouter {
-		sender = NewWebRTCSimulcastSender(p.ctx, p.id, r, s, recv.SpatialLayer())
+		sender = NewSimulcastSender(p.ctx, p.id, r, s, recv.SpatialLayer())
 	} else {
-		sender = NewWebRTCSender(p.ctx, p.id, r, s)
+		sender = NewSimpleSender(p.ctx, p.id, r, s)
 	}
 	sender.OnCloseHandler(func() {
 		if err := p.pc.RemoveTrack(s); err != nil {
 			log.Errorf("Error closing sender: %s", err)
 		}
 	})
+	p.AddSender(r.streamID, sender)
 	go func() {
 		// There exists a bug in chrome where setLocalDescription
 		// fails if track RTP arrives before the sfu offer is set.
@@ -133,18 +140,10 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	return nil
 }
 
-func (r *router) SwitchSpatialLayer(currentLayer, targetLayer uint8, sub Sender) bool {
-	currentRecv := r.GetReceiver(currentLayer)
-	targetRecv := r.GetReceiver(targetLayer)
-	if targetRecv != nil {
-		// TODO do a more smart layer change
-		currentRecv.DeleteSender(sub.ID())
+func (r *router) SwitchSpatialLayer(targetLayer uint8, sub Sender) bool {
+	if targetRecv := r.GetReceiver(targetLayer); targetRecv != nil {
 		targetRecv.AddSender(sub)
 		return true
 	}
 	return false
-}
-
-func (r *router) stats() string {
-	return ""
 }

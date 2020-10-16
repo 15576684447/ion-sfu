@@ -1,7 +1,6 @@
 package sfu
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/pion/ion-sfu/pkg/log"
@@ -32,7 +31,7 @@ func (r *Session) AddTransport(transport Transport) {
 	r.transports[transport.ID()] = transport
 }
 
-// RemoveTransport removes a transport for the session
+// RemoveTransport removes a transport from the session
 func (r *Session) RemoveTransport(tid string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -49,7 +48,6 @@ func (r *Session) RemoveTransport(tid string) {
 func (r *Session) AddRouter(router Router) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	for tid, t := range r.transports {
 		// Don't sub to self
 		if router.ID() == tid {
@@ -74,19 +72,7 @@ func (r *Session) Transports() map[string]Transport {
 	return r.transports
 }
 
-// OnClose called when session is closed
+// OnClose is called when the session is closed
 func (r *Session) OnClose(f func()) {
 	r.onCloseHandler = f
-}
-
-func (r *Session) stats() string {
-	info := fmt.Sprintf("\nsession: %s\n", r.id)
-
-	r.mu.RLock()
-	for _, transport := range r.transports {
-		info += transport.stats()
-	}
-	r.mu.RUnlock()
-
-	return info
 }

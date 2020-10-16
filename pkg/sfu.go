@@ -44,14 +44,6 @@ type SFU struct {
 	sessions map[string]*Session
 }
 
-var (
-	rtcpfb = []webrtc.RTCPFeedback{
-		{Type: webrtc.TypeRTCPFBCCM},
-		{Type: webrtc.TypeRTCPFBNACK},
-		{Type: "nack pli"},
-	}
-)
-
 // NewSFU creates a new sfu instance
 func NewSFU(c Config) *SFU {
 	// Init random seed
@@ -134,10 +126,6 @@ func NewSFU(c Config) *SFU {
 		sessions: make(map[string]*Session),
 	}
 
-	if c.Log.Stats {
-		go s.stats()
-	}
-
 	return s
 }
 
@@ -164,7 +152,7 @@ func (s *SFU) getSession(id string) *Session {
 }
 
 // NewWebRTCTransport creates a new WebRTCTransport that is a member of a session
-func (s *SFU) NewWebRTCTransport(sid string, me webrtc.MediaEngine) (*WebRTCTransport, error) {
+func (s *SFU) NewWebRTCTransport(sid string, me MediaEngine) (*WebRTCTransport, error) {
 	session := s.getSession(sid)
 
 	if session == nil {
@@ -182,29 +170,4 @@ func (s *SFU) NewWebRTCTransport(sid string, me webrtc.MediaEngine) (*WebRTCTran
 // Stop the sfu
 func (s *SFU) Stop() {
 	s.cancel()
-}
-
-func (s *SFU) stats() {
-	t := time.NewTicker(statCycle)
-	for {
-		select {
-		case <-t.C:
-			info := "\n----------------stats-----------------\n"
-
-			s.mu.RLock()
-			sessions := s.sessions
-			s.mu.RUnlock()
-
-			if len(sessions) == 0 {
-				continue
-			}
-
-			for _, session := range sessions {
-				info += session.stats()
-			}
-			log.Infof(info)
-		case <-s.ctx.Done():
-			return
-		}
-	}
 }
