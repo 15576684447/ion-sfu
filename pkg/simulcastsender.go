@@ -37,11 +37,11 @@ type WebRTCSimulcastSender struct {
 	simulcastSSRC       uint32
 	tsOffset            uint32
 	snOffset            uint16
-	lastPli             time.Time
-	lTSCalc             time.Time
-	lSSRC               uint32
-	lTS                 uint32
-	lSN                 uint16
+	lastPli             time.Time //last PLI
+	lTSCalc             time.Time //last Calc
+	lSSRC               uint32    //last ssrc
+	lTS                 uint32    //last ts
+	lSN                 uint16    //last sn
 
 	// VP8Helper temporal helpers
 	refPicID  uint16
