@@ -201,7 +201,8 @@ func (w *WebRTCTransport) AddOutTrack(mid string, track *webrtc.Track) (*webrtc.
 		return nil, errInvalidPC
 	}
 	log.Debugf("AddOutTrack: %s %v", mid, track)
-
+	//根据sub端构造的mapping结果，从inTrack的payloadType值，映射到对应outTrack的payloadType值
+	//inTrack ---> payloadType1 ---> mapping ---> payloadType2 ---> outTrack
 	pt, ok := w.me.MapTo(track.Codec().PayloadType)
 
 	if !ok {

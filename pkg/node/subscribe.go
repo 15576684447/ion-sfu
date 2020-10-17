@@ -26,6 +26,7 @@ func Subscribe(mid string, offer webrtc.SessionDescription) (string, *webrtc.Pee
 
 	pub := router.GetPub().(*transport.WebRTCTransport)
 
+	//sub端根据媒体协商结果，构造mapping结构，用于保存payloadType映射
 	me.MapFromEngine(pub.MediaEngine())
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(me.MediaEngine), webrtc.WithSettingEngine(setting))
@@ -55,6 +56,11 @@ func Subscribe(mid string, offer webrtc.SessionDescription) (string, *webrtc.Pee
 	})
 
 	// Add existing pub tracks to sub
+	//在生成answer之前，添加track
+	//根据inTrack的payload和ssrc，生成outTrack的ssrc
+	//payload根据mapping映射得到(sfu只做转发，其媒体能力根据端上自适应，由于pub端和sub端的媒体能力不一致，所以在转发时需要进行payload映射)
+	//ssrc则保持inTrack和outTrack一致
+	//那么生成answer时，就会根据该payload和ssrc生成对应的MediaDescription
 	for ssrc, track := range pub.GetInTracks() {
 		log.Debugf("AddTrack: codec:%s, ssrc:%d, streamID %s, trackID %s", track.Codec().MimeType, ssrc, mid, track.ID())
 		_, err := sub.AddOutTrack(mid, track)

@@ -91,6 +91,9 @@ func (r *Router) start() {
 			}
 			r.subLock.RLock()
 			// Push to client send queues
+			//一个pub端对应多个sub端，此时对应sub端track只要设置正确的payload和ssrc即可进行转发
+			//todo: 单个pub端的多个inTracks对应多个sub端的多个outTracks，是如何映射的？？？
+			// 发送时，根据pkt的ssrc，找到对应的outTrack，然后发送即可
 			for i := range r.GetSubs() {
 				// Nonblock sending
 				select {
@@ -137,7 +140,7 @@ func (r *Router) GetPub() transport.Transport {
 func (r *Router) subWriteLoop(subID string, trans transport.Transport) {
 	for pkt := range r.subChans[subID] {
 		// log.Infof(" WriteRTP %v:%v to %v PT: %v", pkt.SSRC, pkt.SequenceNumber, trans.ID(), pkt.Header.PayloadType)
-
+		//根据pkt的ssrc，发送到对应的outTrack
 		if err := trans.WriteRTP(pkt); err != nil {
 			// log.Errorf("wt.WriteRTP err=%v", err)
 			// del sub when err is increasing

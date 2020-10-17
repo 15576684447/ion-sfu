@@ -17,6 +17,7 @@ func Publish(offer webrtc.SessionDescription) (string, *webrtc.PeerConnection, *
 	// We make our own mediaEngine so we can place the sender's codecs in it.  This because we must use the
 	// dynamic media type from the sender in our answer. This is not required if we are the offerer
 	me := media.Engine{}
+	//从offer中提取媒体能力，动态匹配
 	if err := me.PopulateFromSDP(offer); err != nil {
 		return "", nil, nil, errSdpParseFailed
 	}
@@ -39,7 +40,7 @@ func Publish(offer webrtc.SessionDescription) (string, *webrtc.PeerConnection, *
 	pc.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
 		log.Infof("Publish: Got track %v", track)
 		pub.AddInTrack(track)
-
+		//pub端每次来新track时，都会自动给已有的subs端添加该track
 		for _, t := range router.GetSubs() {
 			sub := t.(*transport.WebRTCTransport)
 			_, err := sub.AddOutTrack(mid, track)

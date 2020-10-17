@@ -83,6 +83,8 @@ func (e *Engine) PopulateFromSDP(sd webrtc.SessionDescription) error {
 // MapFromEngine finds codec payload type mappings between two MediaEngines.
 // If a codec is supported by both media engines, a mapping is established.
 // Payload type mappings are necessary when a pub and subs payload type differ for the same codec.
+//pub端 -> sub端的payloadType映射，由于同一个codecName在pub端协商与sub端协商时，其payloadType值可能不一致，所以此时需要进行payloadType映射
+//pub端收到pkt时，根据其payloadType值，在mapping中找到sub端对应的payloadType值，然后转发给sub端
 func (e *Engine) MapFromEngine(from *Engine) {
 	if e.mapping == nil {
 		e.mapping = make(map[uint8]uint8)
