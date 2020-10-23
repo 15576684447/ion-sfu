@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	log "github.com/pion/ion-log"
 	sfu "github.com/pion/ion-sfu/pkg"
-	"github.com/pion/ion-sfu/pkg/log"
 	"github.com/pion/webrtc/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -138,14 +138,6 @@ func (s *GRPCSignal) Signal(stream pb.SFU_SignalServer) error {
 				}
 
 				answer, err := peer.Answer(offer)
-				err = stream.Send(&pb.SignalReply{
-					Payload: &pb.SignalReply_Negotiate{
-						Negotiate: &pb.SessionDescription{
-							Type: answer.Type.String(),
-							Sdp:  []byte(answer.SDP),
-						},
-					},
-				})
 				if err != nil {
 					switch err {
 					case sfu.ErrNoTransportEstablished:
@@ -154,6 +146,19 @@ func (s *GRPCSignal) Signal(stream pb.SFU_SignalServer) error {
 					default:
 						return status.Errorf(codes.Internal, fmt.Sprintf("negotiate error: %v", err))
 					}
+				}
+
+				err = stream.Send(&pb.SignalReply{
+					Payload: &pb.SignalReply_Negotiate{
+						Negotiate: &pb.SessionDescription{
+							Type: answer.Type.String(),
+							Sdp:  []byte(answer.SDP),
+						},
+					},
+				})
+
+				if err != nil {
+					return status.Errorf(codes.Internal, fmt.Sprintf("negotiate error: %v", err))
 				}
 
 			} else if payload.Negotiate.Type == webrtc.SDPTypeAnswer.String() {

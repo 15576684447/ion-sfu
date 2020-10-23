@@ -3,7 +3,7 @@ package sfu
 import (
 	"encoding/json"
 
-	"github.com/pion/ion-sfu/pkg/log"
+	log "github.com/pion/ion-log"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -39,13 +39,19 @@ func handleAPICommand(t Transport, dc *webrtc.DataChannel) {
 				switch srm.Video {
 				case videoHighQuality:
 					sender.Mute(false)
-					sender.SwitchSpatialLayer(3)
+					if sender.Type() != SimpleSenderType {
+						sender.SwitchSpatialLayer(3)
+					}
 				case videoMediumQuality:
 					sender.Mute(false)
-					sender.SwitchSpatialLayer(2)
+					if sender.Type() != SimpleSenderType {
+						sender.SwitchSpatialLayer(2)
+					}
 				case videoLowQuality:
 					sender.Mute(false)
-					sender.SwitchSpatialLayer(1)
+					if sender.Type() != SimpleSenderType {
+						sender.SwitchSpatialLayer(1)
+					}
 				case videoMuted:
 					sender.Mute(true)
 				}
