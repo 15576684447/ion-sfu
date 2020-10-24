@@ -62,9 +62,9 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 	}
 
 	// Subscribe to existing transports
-	for _, t := range session.Transports() {//获取session内的所有transports
-		for _, router := range t.Routers() {//todo:每个transport会维护一个router，该transport自己为pub端，其他transports为sub端
-			err := router.AddSender(p)//todo: 新加入的transport自动订阅session内的所有transport
+	for _, t := range session.Transports() { //获取session内的所有transports
+		for _, router := range t.Routers() { //todo:每个transport会维护一个router，该transport自己为pub端，其他transports为sub端
+			err := router.AddSender(p) //todo: 新加入的transport自动订阅session内的所有transport
 			// log.Infof("Init add router ssrc %d to %s", router.receivers[0].Track().SSRC(), p.id)
 			if err != nil {
 				log.Errorf("Error subscribing to router err: %v", err)
@@ -74,22 +74,24 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 	}
 
 	// Add transport to the session
-	session.AddTransport(p)//该transport也加入到该session的transports集合
-	//todo: 为何OnTrack后，作为新增的receiver，已有的transports不会订阅？？？
+	session.AddTransport(p) //该transport也加入到该session的transports集合
+	//该transport上的所有OnTrack回调，都会在该transport的router中新增router
 	pc.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
 		log.Debugf("Peer %s got remote track id: %s ssrc: %d rid :%s label: %s", p.id, track.ID(), track.SSRC(), track.RID(), track.Label())
+		//pc的NewTrack到来后，为其构建对应的RTCReceiver接收track，并新建其对应的router
 		recv := NewWebRTCReceiver(ctx, track, cfg.router)
 
 		if recv.Track().Kind() == webrtc.RTPCodecTypeVideo {
 			//视频需要发送rtcp包到上游
 			go p.sendRTCP(recv)
 		}
-		//todo: 如果是simulcast模式，会发送多个track，根据layer的值保存所有receiver
+		//todo: simulcast模式下，该transport上传输的所有simulcast tracks共用该pc的label作为其ssrc，并且其track携带rid
+		// 非simulcast模式下，每次到来track的ssrc肯定是不同的，所以每次都会新建router
+		// simulcast模式下，simulcast流的多个track共用一个router的receivers，即同时接收多个track，此时存在router复用
 		if router, ok := p.routers[track.ID()]; !ok {
 			//如果该receiver对应的router不存在，则新建router
-			if track.RID() != "" {//如果是 SimulcastRouter 模式
+			if track.RID() != "" { //如果是 SimulcastRouter 模式(rid不为空)
 				router = newRouter(p.id, cfg.router, SimulcastRouter)
-				//todo: simulcast如何发送视频？？？
 				go func() {
 					// Send 3 big remb msgs to fwd all the tracks
 					ticker := time.NewTicker(1 * time.Second)
@@ -108,12 +110,15 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me webrtc.MediaEn
 				router = newRouter(p.id, cfg.router, SimpleRouter)
 			}
 			router.AddReceiver(recv)
+			//todo: 让已存在的所有transports订阅该新流
 			p.session.AddRouter(router)
 			p.mu.Lock()
+			//在该transport上存储该router
 			p.routers[recv.Track().ID()] = router
 			p.mu.Unlock()
 			log.Debugf("Created router %s %d", p.id, recv.Track().SSRC())
 		} else {
+			//todo: 此时肯定为simulcast流，多个layer共用一个router的receivers
 			router.AddReceiver(recv)
 		}
 

@@ -95,7 +95,7 @@ func NewWebRTCReceiver(ctx context.Context, track *webrtc.Track, config RouterCo
 		lastNack:       time.Now().Unix(),
 		maxNackTime:    config.MaxNackTime,
 	}
-	//todo: layer参数？？？
+	//todo: 根据simulcast track携带的rid参数(q/h/f)，确定其spatialLayer
 	switch w.track.RID() {
 	case quarterResolution:
 		w.spatialLayer = 1
@@ -487,6 +487,7 @@ func startVideoReceiver(w *WebRTCReceiver, wStart chan struct{}, config RouterCo
 			go w.rembLoop(config.Video.REMBCycle)
 		}
 	}
+	//simulcast的每路流都需要REMB
 	if w.Track().RID() != "" {
 		w.wg.Add(1)
 		go w.rembLoop(config.Video.REMBCycle)

@@ -53,12 +53,13 @@ func (r *Session) AddRouter(router Router) {
 
 	for tid, t := range r.transports {
 		// Don't sub to self
+		//不订阅自身的流
 		if router.ID() == tid {
 			continue
 		}
 
 		log.Infof("AddRouter ssrc to %s", tid)
-
+		//todo: 让该session内的其他transports订阅该新增的router
 		if t, ok := t.(*WebRTCTransport); ok {
 			if err := router.AddSender(t); err != nil {
 				log.Errorf("Error subscribing transport to router: %s", err)

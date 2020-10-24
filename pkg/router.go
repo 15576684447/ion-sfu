@@ -78,7 +78,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	if r.kind == SimpleRouter {
 		recv = r.receivers[0]
 		ssrc = recv.Track().SSRC()
-	} else {//todo: 如果是 SimulcastRouter 模式，此处并没有选择最佳流的逻辑实现？？？
+	} else { //todo: 如果是 SimulcastRouter 模式，此处并没有选择最佳流的逻辑实现？？？
 		for _, rcv := range r.receivers {
 			recv = rcv
 			if !r.config.Simulcast.BestQualityFirst && rcv != nil {
@@ -91,7 +91,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	if recv == nil {
 		return errNoReceiverFound
 	}
-
+	//复制inTrack的payloadType、stream id以及ssrc参数，构造outTrack
 	inTrack := recv.Track()
 	to := p.me.GetCodecsByName(recv.Track().Codec().Name)
 	if len(to) == 0 {
@@ -102,6 +102,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	// Simulcast omits stream id, use transport label to keep all tracks under same stream
 	//todo: SimulcastRouter会忽略streamID？？？
 	if r.kind == SimulcastRouter {
+		//simulcast会省略stream id，即track.label，这时候将使用transport的label替代，用以保持所有simulcast track的stream id一致
 		label = p.label
 	}
 	outTrack, err := p.pc.NewTrack(pt, ssrc, inTrack.ID(), label)
@@ -113,6 +114,7 @@ func (r *router) AddSender(p *WebRTCTransport) error {
 	if err != nil {
 		return err
 	}
+	//使用RTPSender构造sender(RTPSender是track的发送句柄)
 	if r.kind == SimulcastRouter {
 		sender = NewWebRTCSimulcastSender(p.ctx, p.id, r, s, recv.SpatialLayer())
 	} else {
