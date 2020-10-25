@@ -88,12 +88,14 @@ func (s *WebRTCSimulcastSender) WriteRTP(pkt *rtp.Packet) {
 	}
 	// Check if packet SSRC is different from before
 	// if true, the video source changed
+	//如果中途视频源ssrc发生改变，需要等待I帧才能继续发送，所以视频切换ssrc时可能会出现短暂的停顿
 	if s.lSSRC != pkt.SSRC {
 		recv := s.router.GetReceiver(s.targetSpatialLayer)
 		if recv == nil || recv.Track().SSRC() != pkt.SSRC {
 			return
 		}
 		// Forward pli to request a keyframe at max 1 pli per second
+		//不断发送PLI请求I帧
 		if time.Now().Sub(s.lastPli) > time.Second {
 			if err := recv.WriteRTCP(&rtcp.PictureLossIndication{SenderSSRC: pkt.SSRC, MediaSSRC: pkt.SSRC}); err == nil {
 				s.lastPli = time.Now()
@@ -134,6 +136,7 @@ func (s *WebRTCSimulcastSender) WriteRTP(pkt *rtp.Packet) {
 		s.currentSpatialLayer = s.targetSpatialLayer
 	}
 	// Backup pkt original data
+	//暂存pkt信息，因为pkt使用指针传递，而该pkt可能在多个地方被使用，所以该处使用完需要恢复pkt信息，以免影响其他地方使用
 	origPT := pkt.Header.PayloadType
 	origSSRC := pkt.SSRC
 	origPl := pkt.Payload
@@ -141,6 +144,7 @@ func (s *WebRTCSimulcastSender) WriteRTP(pkt *rtp.Packet) {
 	origTS := pkt.Timestamp
 	// Compute how much time passed between the old RTP pkt
 	// and the current packet, and fix timestamp on source change
+	//ssrc切换后，可能会在切换过程中损失一段时间的pkt，中间的ts和seq可能会发生跳跃，所以需要记录diff值，之后做偏移补偿
 	if !s.lTSCalc.IsZero() && s.lSSRC != pkt.SSRC {
 		tDiff := time.Now().Sub(s.lTSCalc)
 		td := uint32((tDiff.Milliseconds() * 90) / 1000)
@@ -169,6 +173,7 @@ func (s *WebRTCSimulcastSender) WriteRTP(pkt *rtp.Packet) {
 	// Update base
 	s.lTSCalc = time.Now()
 	s.lSSRC = pkt.SSRC
+	//修正时间戳和序列号信息
 	s.lTS = pkt.Timestamp - s.tsOffset
 	s.lSN = pkt.SequenceNumber - s.snOffset
 	// Update pkt headers
