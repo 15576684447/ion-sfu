@@ -145,3 +145,18 @@ func Test_queue_edges(t *testing.T) {
 	q.AddPacket(np, false)
 	assert.Equal(t, expectedSN+1, q.GetPacket(expectedSN+1).SequenceNumber)
 }
+
+//todo: 测试 head | tail 计算方式，最终结果为loop 递减
+func TestSN(t *testing.T) {
+	head := 0
+	pkts := 128
+	head = (head - 1) & (pkts - 1)
+	t.Log(head)
+	head = (head - 1) & (pkts - 1)
+	t.Log(head)
+	head = (head - 1) & (pkts - 1)
+	t.Log(head)
+	head = (head - 1) & (pkts - 1)
+	t.Log(head)
+
+}
