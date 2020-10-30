@@ -18,6 +18,12 @@ type queue struct {
 	onLost   func(nack *rtcp.TransportLayerNack)
 }
 
+/*
+todo:
+	head递增方式 q.head = (q.head + 1) & (len(q.pkts) - 1)
+	tail递增方式 q.tail = (q.tail + 1) & (len(q.pkts) - 1)
+*/
+
 func (q *queue) AddPacket(pkt *rtp.Packet, latest bool) {
 	if !latest {
 		q.set(int(q.headSN-pkt.SequenceNumber), pkt)

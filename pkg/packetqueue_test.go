@@ -147,7 +147,7 @@ func Test_queue_edges(t *testing.T) {
 }
 
 //todo: 测试 head | tail 计算方式，最终结果为loop 递减
-func TestSN(t *testing.T) {
+func TestSNDown(t *testing.T) {
 	head := 0
 	pkts := 128
 	head = (head - 1) & (pkts - 1)
@@ -157,6 +157,20 @@ func TestSN(t *testing.T) {
 	head = (head - 1) & (pkts - 1)
 	t.Log(head)
 	head = (head - 1) & (pkts - 1)
+	t.Log(head)
+
+}
+
+func TestSNUp(t *testing.T) {
+	head := 125
+	pkts := 128
+	head = (head + 1) & (pkts - 1)
+	t.Log(head)
+	head = (head + 1) & (pkts - 1)
+	t.Log(head)
+	head = (head + 1) & (pkts - 1)
+	t.Log(head)
+	head = (head + 1) & (pkts - 1)
 	t.Log(head)
 
 }
