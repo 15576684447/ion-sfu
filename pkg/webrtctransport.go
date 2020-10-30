@@ -84,7 +84,7 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me MediaEngine, c
 			RouterConfig: cfg.router,
 			tccExt:       me.tCCExt,
 		})
-
+		//如果该connection的该track第一次触发OnTrack(audio与video是不同track传输的，只有video使用simulcast模式，才会出现一个track上触发多次OnTrack的情况)
 		if router, ok := p.routers[track.ID()]; !ok {
 			if track.RID() != "" {
 				router = newRouter(p, track.Label(), cfg.router, SimulcastRouter)
@@ -93,10 +93,12 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me MediaEngine, c
 			}
 			router.AddReceiver(recv)
 			// If track is simulcast and BestQualityFirst is true and current track is full resolution subscribe to router
+			//如果是simulcast模式 && 需要最高画质 && 当前到来的track为full resolution，则直接设置simulcast
 			if router.Kind() == SimulcastRouter && router.Config().Simulcast.BestQualityFirst && track.RID() == fullResolution {
 				simulcastToSessionJoined = true
 				p.session.AddRouter(router)
 				// If track is simulcast AND BestQualityFirst is false and track is full resolution
+				//如果是simulcast模式 && 不需要最高画质 && 当前到来的track为full resolution，则再等一秒，如果一秒后还没来quarter resolution，则只能设置为full resolution
 			} else if router.Kind() == SimulcastRouter && !router.Config().Simulcast.BestQualityFirst && track.RID() == fullResolution {
 				// Wait one second to receive the quarter resolution, if not received it may be not supported or disabled
 				// and only half or full resolution was sent.
@@ -112,6 +114,8 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me MediaEngine, c
 				}()
 				// If track is not simulcast OR is simulcast and BestQualityFirst is false and current track is not full
 				// resolution subscribe to router
+				//如果不是simulcast模式 或者
+				//如果是simulcast模式 && 不需要最高画质 && 当前到来的track不是full resolution，直接设置simulcast
 			} else if router.Kind() != SimulcastRouter || router.Kind() == SimulcastRouter &&
 				!router.Config().Simulcast.BestQualityFirst && track.RID() != fullResolution {
 				simulcastToSessionJoined = true
@@ -122,6 +126,10 @@ func NewWebRTCTransport(ctx context.Context, session *Session, me MediaEngine, c
 			p.mu.Unlock()
 			log.Debugf("Created router %s %d", p.id, recv.Track().SSRC())
 		} else {
+			//如果该track多次触发OnTrack，则肯定是simulcast触发的，无需额外判断
+			//如果simulcast还没确定track &&
+			//(需要最高画质 && full resolution到来) || (无需最高画质 && quarter resolution到来)
+			//则设置simulcast
 			if !simulcastToSessionJoined &&
 				(router.Config().Simulcast.BestQualityFirst && track.RID() == fullResolution ||
 					!router.Config().Simulcast.BestQualityFirst && track.RID() == quarterResolution) {
