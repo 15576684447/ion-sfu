@@ -2,11 +2,9 @@ package sfu
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"io"
 	"sync"
-	"time"
 
 	log "github.com/pion/ion-log"
 	"github.com/pion/rtcp"
@@ -17,42 +15,35 @@ import (
 // SimpleSender represents a Sender which writes RTP to a webrtc track
 type SimpleSender struct {
 	id             string
-	ctx            context.Context
-	cancel         context.CancelFunc
 	sender         *webrtc.RTPSender
 	track          *webrtc.Track
-	router         Router
+	router         *receiverRouter
 	enabled        atomicBool
 	payload        uint8
 	maxBitrate     uint64
 	target         uint64
 	onCloseHandler func()
 	// Muting helpers
-	lastPli  time.Time
 	reSync   atomicBool
 	snOffset uint16
 	tsOffset uint32
 	lastSN   uint16
 	lastTS   uint32
 
-	once sync.Once
+	start sync.Once
+	close sync.Once
 }
 
 // NewSimpleSender creates a new track sender instance
-func NewSimpleSender(ctx context.Context, id string, router Router, sender *webrtc.RTPSender) Sender {
-	ctx, cancel := context.WithCancel(ctx)
+func NewSimpleSender(id string, router *receiverRouter, sender *webrtc.RTPSender) Sender {
 	s := &SimpleSender{
 		id:      id,
-		ctx:     ctx,
-		cancel:  cancel,
-		enabled: atomicBool{1},
 		payload: sender.Track().Codec().PayloadType,
 		router:  router,
 		sender:  sender,
 		track:   sender.Track(),
 	}
 
-	s.enabled.set(true)
 	go s.receiveRTCP()
 
 	return s
@@ -62,24 +53,26 @@ func (s *SimpleSender) ID() string {
 	return s.id
 }
 
+func (s *SimpleSender) Start() {
+	s.start.Do(func() {
+		log.Debugf("starting sender %s with ssrc %d", s.id, s.track.SSRC())
+		s.reSync.set(true)
+		s.enabled.set(true)
+	})
+}
+
 // WriteRTP to the track
 func (s *SimpleSender) WriteRTP(pkt *rtp.Packet) {
-	if s.ctx.Err() != nil || !s.enabled.get() {
+	if !s.enabled.get() {
 		return
 	}
+
 	if s.reSync.get() {
 		if s.track.Kind() == webrtc.RTPCodecTypeVideo {
 			// Forward pli to request a keyframe at max 1 pli per second
-			if time.Now().Sub(s.lastPli) > time.Second {
-				recv := s.router.GetReceiver(0)
-				if recv == nil {
-					return
-				}
-				if err := s.router.SendRTCP([]rtcp.Packet{
-					&rtcp.PictureLossIndication{SenderSSRC: pkt.SSRC, MediaSSRC: pkt.SSRC},
-				}); err == nil {
-					s.lastPli = time.Now()
-				}
+			recv := s.router.receivers[0]
+			if recv == nil {
+				return
 			}
 			relay := false
 			// Wait for a keyframe to sync new source
@@ -100,6 +93,9 @@ func (s *SimpleSender) WriteRTP(pkt *rtp.Packet) {
 				}
 			}
 			if !relay {
+				recv.SendRTCP([]rtcp.Packet{
+					&rtcp.PictureLossIndication{SenderSSRC: pkt.SSRC, MediaSSRC: pkt.SSRC},
+				})
 				return
 			}
 		}
@@ -107,6 +103,7 @@ func (s *SimpleSender) WriteRTP(pkt *rtp.Packet) {
 		s.tsOffset = pkt.Timestamp - s.lastTS + 1
 		s.reSync.set(false)
 	}
+
 	// Backup payload
 	bSN := pkt.SequenceNumber
 	bTS := pkt.Timestamp
@@ -117,6 +114,7 @@ func (s *SimpleSender) WriteRTP(pkt *rtp.Packet) {
 	pkt.PayloadType = s.payload
 	pkt.Timestamp = s.lastTS
 	pkt.SequenceNumber = s.lastSN
+
 	err := s.track.WriteRTP(pkt)
 	// Restore packet
 	pkt.PayloadType = bPt
@@ -144,6 +142,10 @@ func (s *SimpleSender) Kind() webrtc.RTPCodecType {
 	return s.track.Kind()
 }
 
+func (s *SimpleSender) Track() *webrtc.Track {
+	return s.track
+}
+
 func (s *SimpleSender) Type() SenderType {
 	return SimpleSenderType
 }
@@ -162,14 +164,12 @@ func (s *SimpleSender) SwitchTemporalLayer(layer uint8) {
 
 // Close track
 func (s *SimpleSender) Close() {
-	s.once.Do(s.close)
-}
-
-func (s *SimpleSender) close() {
-	s.cancel()
-	if s.onCloseHandler != nil {
-		s.onCloseHandler()
-	}
+	s.close.Do(func() {
+		log.Debugf("Closing sender %s", s.id)
+		if s.onCloseHandler != nil {
+			s.onCloseHandler()
+		}
+	})
 }
 
 // OnCloseHandler method to be called on remote tracked removed
@@ -180,16 +180,12 @@ func (s *SimpleSender) OnCloseHandler(fn func()) {
 func (s *SimpleSender) receiveRTCP() {
 	for {
 		pkts, err := s.sender.ReadRTCP()
-		if err == io.ErrClosedPipe {
+		if err == io.ErrClosedPipe || err == io.EOF {
 			// Remove sender from receiver
-			if recv := s.router.GetReceiver(0); recv != nil {
+			if recv := s.router.receivers[0]; recv != nil {
 				recv.DeleteSender(s.id)
 			}
 			s.Close()
-			return
-		}
-
-		if s.ctx.Err() != nil {
 			return
 		}
 
@@ -197,7 +193,7 @@ func (s *SimpleSender) receiveRTCP() {
 			log.Errorf("rtcp err => %v", err)
 		}
 
-		recv := s.router.GetReceiver(0)
+		recv := s.router.receivers[0]
 		if recv == nil {
 			continue
 		}
@@ -206,13 +202,14 @@ func (s *SimpleSender) receiveRTCP() {
 		for _, pkt := range pkts {
 			switch pkt := pkt.(type) {
 			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-				fwdPkts = append(fwdPkts, pkt)
-				s.lastPli = time.Now()
+				if !s.reSync.get() && s.enabled.get() {
+					fwdPkts = append(fwdPkts, pkt)
+				}
 			case *rtcp.TransportLayerNack:
 				log.Tracef("sender got nack: %+v", pkt)
 				for _, pair := range pkt.Nacks {
 					if err := recv.WriteBufferedPacket(
-						pair.PacketID,
+						pair.PacketList(),
 						s.track,
 						s.snOffset,
 						s.tsOffset,
@@ -226,9 +223,7 @@ func (s *SimpleSender) receiveRTCP() {
 			}
 		}
 		if len(fwdPkts) > 0 {
-			if err := s.router.SendRTCP(fwdPkts); err != nil {
-				log.Errorf("Forwarding rtcp from sender err: %v", err)
-			}
+			recv.SendRTCP(fwdPkts)
 		}
 	}
 }

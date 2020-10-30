@@ -36,7 +36,7 @@ func TestNewWebRTCTransport(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewWebRTCTransport(tt.args.ctx, tt.args.session, tt.args.me, tt.args.cfg)
+			got, err := NewWebRTCTransport(tt.args.session, tt.args.me, tt.args.cfg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewWebRTCTransport() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -72,7 +72,7 @@ func TestWebRTCTransport_AddTransceiverFromKind(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewSession("test")
-			p, err := NewWebRTCTransport(context.Background(), s, me, WebRTCTransportConfig{})
+			p, err := NewWebRTCTransport(s, me, WebRTCTransportConfig{})
 			assert.NoError(t, err)
 			_, err = p.AddTransceiverFromKind(tt.args.kind, tt.args.init...)
 			if (err != nil) != tt.wantErr {
@@ -84,7 +84,6 @@ func TestWebRTCTransport_AddTransceiverFromKind(t *testing.T) {
 }
 
 func TestWebRTCTransport_Close(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
 	me := webrtc.MediaEngine{}
 	me.RegisterDefaultCodecs()
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(me))
@@ -94,8 +93,6 @@ func TestWebRTCTransport_Close(t *testing.T) {
 
 	type fields struct {
 		id      string
-		ctx     context.Context
-		cancel  context.CancelFunc
 		pc      *webrtc.PeerConnection
 		session *Session
 	}
@@ -108,8 +105,6 @@ func TestWebRTCTransport_Close(t *testing.T) {
 			name: "Must close inner peer connection and cancel context without errors.",
 			fields: fields{
 				id:      "test",
-				ctx:     ctx,
-				cancel:  cancel,
 				pc:      peer,
 				session: s,
 			},
@@ -121,8 +116,6 @@ func TestWebRTCTransport_Close(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &WebRTCTransport{
 				id:      tt.fields.id,
-				ctx:     tt.fields.ctx,
-				cancel:  tt.fields.cancel,
 				pc:      tt.fields.pc,
 				session: tt.fields.session,
 			}
@@ -130,7 +123,6 @@ func TestWebRTCTransport_Close(t *testing.T) {
 			if err := p.Close(); (err != nil) != tt.wantErr {
 				t.Errorf("Close() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			assert.Error(t, ctx.Err())
 			assert.Equal(t, 0, len(s.transports))
 		})
 	}
@@ -231,7 +223,7 @@ func TestWebRTCTransport_CreateOffer(t *testing.T) {
 
 func TestWebRTCTransport_GetRouter(t *testing.T) {
 	type fields struct {
-		routers map[string]Router
+		router Router
 	}
 	type args struct {
 		trackID string
@@ -248,7 +240,7 @@ func TestWebRTCTransport_GetRouter(t *testing.T) {
 		{
 			name: "Must return router by ID",
 			fields: fields{
-				routers: map[string]Router{"test": router},
+				router: router,
 			},
 			args: args{
 				trackID: "test",
@@ -260,9 +252,9 @@ func TestWebRTCTransport_GetRouter(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			p := &WebRTCTransport{
-				routers: tt.fields.routers,
+				router: tt.fields.router,
 			}
-			if got := p.GetRouter(tt.args.trackID); !reflect.DeepEqual(got, tt.want) {
+			if got := p.GetRouter(); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("GetRouter() = %v, want %v", got, tt.want)
 			}
 		})
@@ -544,39 +536,6 @@ func TestWebRTCTransport_OnTrack(t *testing.T) {
 	}
 }
 
-func TestWebRTCTransport_Routers(t *testing.T) {
-	type fields struct {
-		routers map[string]Router
-	}
-
-	routers := map[string]Router{"test": &router{}}
-
-	tests := []struct {
-		name   string
-		fields fields
-		want   map[string]Router
-	}{
-		{
-			name: "Must return current map of routers",
-			fields: fields{
-				routers: routers,
-			},
-			want: routers,
-		},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			p := &WebRTCTransport{
-				routers: tt.fields.routers,
-			}
-			if got := p.Routers(); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Routers() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestWebRTCTransport_SetLocalDescription(t *testing.T) {
 	me := webrtc.MediaEngine{}
 	me.RegisterDefaultCodecs()
@@ -672,6 +631,10 @@ func TestWebRTCTransport_SetRemoteDescription(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &WebRTCTransport{
 				pc: tt.fields.pc,
+				router: &RouterMock{
+					AddTWCCExtFunc: func(_ string, _ int) {
+					},
+				},
 			}
 			if err := p.SetRemoteDescription(tt.args.desc); (err != nil) != tt.wantErr {
 				t.Errorf("SetRemoteDescription() error = %v, wantErr %v", err, tt.wantErr)
