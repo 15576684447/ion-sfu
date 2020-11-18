@@ -388,31 +388,31 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 
 //构建RR
 /*
-本次应收
-本次实际收
-本次实际收 / 本次应收 = 丢包率
+cumulative number of packet lost: 总丢包数，针对整个回话周期
+lost = 理论应收总数 - 实际收到总数
 
-本次应收 - 上次应收 = 应收interval
-本次实际收 - 上次实际收 = 实际收interval
-实际收interval / 应收interval = 相对丢包率
+Loss fraction: 该RR发送间隔中rtp报文的丢失率
+本次应收 - 上次应收 = 本次RR发送interval应收
+本次实际收 - 上次实际收 = 本次RR发送interval实际收
+本次RR发送interval实际收 / 本次RR发送interval应收 = 本次RR发送interval的相对丢包率
 */
 func (b *Buffer) buildReceptionReport() rtcp.ReceptionReport {
 	extMaxSeq := b.cycles | uint32(b.maxSeqNo)
 	expected := extMaxSeq - uint32(b.baseSN) + 1
-	//计算丢包个数 = 理论应收到个数 - 实际收到个数
+	//计算整个会话丢包总数 = 理论应收到个数 - 实际收到个数
 	lost := expected - b.packetCount
 	if b.packetCount == 0 {
 		lost = 0
 	}
-	//本次预期收到与上次预期收到的差值interval
+	//本次预期收到与上次预期收到的差值interval = 本次RR发送interval应收
 	expectedInterval := expected - b.lastExpected
 	b.lastExpected = expected
-	//本次实际收到与上次实际收到的的差值interval
+	//本次实际收到与上次实际收到的的差值interval = 本次RR发送interval实际收
 	receivedInterval := b.packetCount - b.lastReceived
 	b.lastReceived = b.packetCount
-	//计算相比上次，本次丢包的增量 lostInterval
+	//本次RR发送interval丢包个数 lostInterval
 	lostInterval := expectedInterval - receivedInterval
-	//计算相比上次，本次丢包的丢包率增量 lostRate
+	//本次RR发送interval丢包率 lostRate
 	b.lostRate = float32(lostInterval) / float32(expectedInterval)
 	var fracLost uint8
 	if expectedInterval != 0 && lostInterval > 0 {
