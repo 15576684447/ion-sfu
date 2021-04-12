@@ -5,26 +5,25 @@ import (
 	"fmt"
 	"os"
 
-	log "github.com/pion/ion-log"
 	"github.com/pion/ion-sfu/cmd/signal/allrpc/server"
-	sfu "github.com/pion/ion-sfu/pkg"
+	log "github.com/pion/ion-sfu/pkg/logger"
+	"github.com/pion/ion-sfu/pkg/sfu"
 	"github.com/spf13/viper"
 )
 
-const (
-	portRangeLimit = 1024
-)
-
 var (
-	file                string
-	cert                string
-	key                 string
-	gaddr, jaddr, paddr string
+	file                       string
+	cert                       string
+	key                        string
+	gaddr, jaddr, paddr, maddr string
+	verbosityLevel             int
+	logger                     = log.New()
 )
 
 // Config defines parameters for configuring the sfu instance
 type Config struct {
 	sfu.Config `mapstructure:",squash"`
+	LogConfig  log.GlobalConfig `mapstructure:"log"`
 }
 
 var (
@@ -40,7 +39,9 @@ func showHelp() {
 	fmt.Println("      -jaddr {jsonrpc listen addr}")
 	fmt.Println("      -paddr {pprof listen addr}")
 	fmt.Println("             {grpc and jsonrpc addrs should be set at least one}")
+	fmt.Println("      -maddr {metrics listen addr}")
 	fmt.Println("      -h (show help info)")
+	fmt.Println("      -v {0-10} (verbosity level, default 0)")
 }
 
 func load() bool {
@@ -54,26 +55,31 @@ func load() bool {
 
 	err = viper.ReadInConfig()
 	if err != nil {
-		fmt.Printf("config file %s read failed. %v\n", file, err)
+		logger.Error(err, "config file read failed", "file", file)
 		return false
 	}
 	err = viper.GetViper().Unmarshal(&conf)
 	if err != nil {
-		fmt.Printf("sfu config file %s loaded failed. %v\n", file, err)
+		logger.Error(err, "sfu config file loaded failed", "file", file)
 		return false
 	}
 
 	if len(conf.WebRTC.ICEPortRange) > 2 {
-		fmt.Printf("config file %s loaded failed. range port must be [min,max]\n", file)
+		logger.Error(nil, "config file loaded failed. webrtc range port must be [min,max]", "file", file)
 		return false
 	}
 
-	if len(conf.WebRTC.ICEPortRange) != 0 && conf.WebRTC.ICEPortRange[1]-conf.WebRTC.ICEPortRange[0] < portRangeLimit {
-		fmt.Printf("config file %s loaded failed. range port must be [min, max] and max - min >= %d\n", file, portRangeLimit)
+	if len(conf.Turn.PortRange) > 2 {
+		logger.Error(nil, "config file loaded failed. turn port must be [min,max]", "file", file)
 		return false
 	}
 
-	fmt.Printf("config %s load ok!\n", file)
+	if conf.LogConfig.V < 0 {
+		logger.Error(nil, "Logger V-Level cannot be less than 0")
+		return false
+	}
+
+	logger.Info("Config file loaded", "file", file)
 	return true
 }
 
@@ -84,10 +90,28 @@ func parse() bool {
 	flag.StringVar(&jaddr, "jaddr", "", "jsonrpc listening address")
 	flag.StringVar(&gaddr, "gaddr", "", "grpc listening address")
 	flag.StringVar(&paddr, "paddr", "", "pprof listening address")
+	flag.StringVar(&maddr, "maddr", "", "metrics listening address")
+	flag.IntVar(&verbosityLevel, "v", -1, "verbosity level, higher value - more logs")
 	help := flag.Bool("h", false, "help info")
 	flag.Parse()
 
-	//at least set one
+	if gaddr == "" {
+		gaddr = getEnv("gaddr")
+	}
+
+	if jaddr == "" {
+		jaddr = getEnv("jaddr")
+	}
+
+	if paddr == "" {
+		paddr = getEnv("paddr")
+	}
+
+	if maddr == "" {
+		maddr = getEnv("maddr")
+	}
+
+	// at least set one
 	if gaddr == "" && jaddr == "" {
 		return false
 	}
@@ -102,17 +126,27 @@ func parse() bool {
 	return true
 }
 
+func getEnv(key string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+
+	return ""
+}
+
 func main() {
 	if !parse() {
 		showHelp()
 		os.Exit(-1)
 	}
-	fixByFile := []string{"asm_amd64.s", "proc.go", "icegatherer.go", "jsonrpc2"}
-	fixByFunc := []string{"Handle"}
-	log.Init(conf.Log.Level, fixByFile, fixByFunc)
-	log.Infof("--- Starting SFU Node ---")
+	// Check that the -v is not set (default -1)
+	if verbosityLevel < 0 {
+		verbosityLevel = conf.LogConfig.V
+	}
 
-	node := server.New(conf.Config)
+	log.SetGlobalOptions(log.GlobalConfig{V: verbosityLevel})
+
+	node := server.New(conf.Config, logger)
 
 	if gaddr != "" {
 		go node.ServeGRPC(gaddr)
@@ -124,6 +158,10 @@ func main() {
 
 	if paddr != "" {
 		go node.ServePProf(paddr)
+	}
+
+	if maddr != "" {
+		go node.ServeMetrics(maddr)
 	}
 
 	select {}
