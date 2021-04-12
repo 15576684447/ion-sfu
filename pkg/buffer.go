@@ -397,12 +397,18 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 			}
 			//计算相邻tccPkt的delta
 			delta = (stat.Timestamp - timestamp) / 250
+			/*
+				If the "Packet received, large or negative delta" symbol has been
+				appended to the status list, a 16-bit signed receive delta will be
+				appended to recv delta list, representing a delta in the range
+				[-8192.0, 8191.75] ms.
+			*/
 			if delta < 0 || delta > 255 {
 				status = rtcp.TypeTCCPacketReceivedLargeDelta
 				rDelta := int16(delta)
 				if int64(rDelta) != delta {
 					if rDelta > 0 {
-						rDelta = math.MaxInt16
+						rDelta = math.MaxInt16 //Max 32767*250=8191750=8191.75ms MIN -32768*250=-8192000=-8192ms
 					} else {
 						rDelta = math.MinInt16
 					}
@@ -413,12 +419,17 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 					Delta: int64(rDelta) * 250,
 				})
 				deltaLen += 2
-			} else {
+			} else { //delta in the range [0, 63.75]ms
+				/*
+					If the "Packet received, small delta" symbol has been appended to
+					the status list, an 8-bit unsigned receive delta will be appended
+					to recv delta list, representing a delta in the range [0, 63.75]ms.
+				*/
 				status = rtcp.TypeTCCPacketReceivedSmallDelta
 				//统计所有delta
 				rtcpTCC.RecvDeltas = append(rtcpTCC.RecvDeltas, &rtcp.RecvDelta{
 					Type:  status,
-					Delta: delta * 250,
+					Delta: delta * 250, //MAX 255*250=63750=63.75ms
 				})
 				deltaLen++
 			}
@@ -427,7 +438,33 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 		//统计是否全部为同一种模式 TypeTCCPacketReceivedLargeDelta || TypeTCCPacketReceivedSmallDelta
 		//todo: 如果模式不一致，则处理(模式不一致指的是需要使用不同长度字长表示delta)
 		if allSame && lastStatus != rtcp.TypeTCCPacketReceivedWithoutDelta && status != lastStatus {
-			//如果第一次出现status不一致时，已经存在了至少8个包，则将这些包封装成chunk，继续处理
+			//如果第一次出现status不一致时，已经存在了至少7个包，则将这些包封装成chunk，继续处理
+			/*
+				A run length chunk starts with 0 bit, followed by a packet status
+				   symbol and the run length of that symbol.
+
+				       0                   1
+				       0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+				      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+				      |T| S |       Run Length        |
+				      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+				   chunk type (T):  1 bit A zero identifies this as a run length chunk.
+				   packet status symbol (S):  2 bits The symbol repeated in this run.
+				   run length (L):  13 bits An unsigned integer denoting the run length.
+
+				Example 1:
+
+					   0                   1
+					   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+					  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+					  |0|0 0|0 0 0 0 0 1 1 0 1 1 1 0 1|
+					  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+				   This is a run of the "packet not received" status of length 221.
+			*/
+			//TODO:RunLengthChunk的Marshal方法会将RunLength转换成14bit的Run Length
+			//如果在出现status不一致前，超过7个delta都是相同status，则使用RunLengthChunk表示
 			if statusList.Len() > 7 {
 				rtcpTCC.PacketChunks = append(rtcpTCC.PacketChunks, &rtcp.RunLengthChunk{
 					PacketStatusSymbol: lastStatus,
@@ -438,7 +475,7 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 				maxStatus = rtcp.TypeTCCPacketNotReceived
 				allSame = true
 			} else {
-				//如果当前不足8个包，则只能置allSame = false，todo: 等待下面流程处理
+				//否则将使用StatusVectorChunk表示，此时设置allSame = false，进入status非等长处理逻辑
 				allSame = false
 			}
 		}
@@ -449,15 +486,63 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 			maxStatus = status
 		}
 		lastStatus = status
-		//todo: 如果delta模式出现不一致，则进行处理
+		//todo: delta非等长处理逻辑
 		if !allSame {
-			//如果占最长字节的status为large delta && 总数=7
+			/*
+				A status vector chunk starts with a 1 bit to identify it as a vector
+				   chunk, followed by a symbol size bit and then 7 or 14 symbols,
+				   depending on the size bit.
+
+						0                   1
+						0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+					   |T|S|       symbol list         |
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+				   chunk type (T):  1 bit A one identifies this as a status vector chunk.
+				   symbol size (S):  1 bit A zero means this vector contains only
+							   "packet received" (0) and "packet not received" (1)
+							   symbols.  This means we can compress each symbol to just
+							   one bit, 14 in total.  A one means this vector contains
+							   the normal 2-bit symbols, 7 in total.
+				   symbol list:  14 bits A list of packet status symbols, 7 or 14 in total.
+
+				   Example 1:
+
+						0                   1
+						0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+					   |1|0|0 1 1 1 1 1 0 0 0 1 1 1 0 0|
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+				   This chunk contains, in order:
+					  1x "packet not received"
+					  5x "packet received"
+					  3x "packet not received"
+					  3x "packet received"
+					  2x "packet not received"
+
+				   Example 2:
+
+						0                   1
+						0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+					   |1|1|0 0 1 1 0 1 0 1 0 1 0 0 0 0|
+					   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+				   This chunk contains, in order:
+					  1x "packet not received"
+					  1x "packet received, w/o timestamp"
+					  3x "packet received"
+					  2x "packet not received"
+			*/
+			//TODO:StatusVectorChunk的Marshal方法会将SymbolList转换成14bit的symbol list
+			//如果status最大值为LargeDelta，则7个delta封装成一个StatusVectorChunk，每个delta占2bit，共14bit
 			if maxStatus == rtcp.TypeTCCPacketReceivedLargeDelta && statusList.Len() > 6 {
 				symbolList := make([]uint16, 7)
 				for i := 0; i < 7; i++ {
 					symbolList[i] = statusList.PopFront().(uint16)
 				}
-				//对这7个rtcp进行chunk封包
 				rtcpTCC.PacketChunks = append(rtcpTCC.PacketChunks, &rtcp.StatusVectorChunk{
 					SymbolSize: rtcp.TypeTCCSymbolSizeTwoBit,
 					SymbolList: symbolList,
@@ -476,13 +561,12 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 					}
 					lastStatus = status
 				}
-				//如果占最长字节的status为small delta && 总数=14
+				//如果status最大值为SmallDelta，则14个delta封装成一个StatusVectorChunk，每个delta占1bit，共14bit
 			} else if statusList.Len() > 13 {
 				symbolList := make([]uint16, 14)
 				for i := 0; i < 14; i++ {
 					symbolList[i] = statusList.PopFront().(uint16)
 				}
-				//对这14个rtcp进行chunk封包
 				rtcpTCC.PacketChunks = append(rtcpTCC.PacketChunks, &rtcp.StatusVectorChunk{
 					SymbolSize: rtcp.TypeTCCSymbolSizeOneBit,
 					SymbolList: symbolList,
@@ -493,9 +577,7 @@ func (b *Buffer) buildTransportCCPacket() *rtcp.TransportLayerCC {
 			}
 		}
 	}
-	//处理剩余的statusList
-	//如果字长都一样，则全部封装成chunk
-	//如果不一样，则以最大字节原则封装成chunk
+	//剩下不足长度的，单独封装成RunLengthChunk或者StatusVectorChunk
 	if statusList.Len() > 0 {
 		if allSame {
 			rtcpTCC.PacketChunks = append(rtcpTCC.PacketChunks, &rtcp.RunLengthChunk{
