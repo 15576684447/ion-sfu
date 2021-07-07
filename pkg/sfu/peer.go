@@ -24,28 +24,40 @@ var (
 	ErrOfferIgnored = errors.New("offered ignored")
 )
 
-// JoinConfig allow adding more control to the peers joining a session.
-type JoinConfig struct {
-	// If true the peer will not be allowed to publish tracks to session.
-	NoPublish bool
-	// If true the peer will not be allowed to subscribe to other peers in session.
-	NoSubscribe bool
-	// If true it will relay all the published tracks of the peer
-	Relay bool
+type Peer interface {
+	ID() string
+	Session() Session
+	Publisher() *Publisher
+	Subscriber() *Subscriber
+	Close() error
+	SendDCMessage(label string, msg []byte) error
 }
 
-// SessionProvider provides the session to the sfu.Peer{}
+// JoinConfig allow adding more control to the peers joining a SessionLocal.
+type JoinConfig struct {
+	// If true the peer will not be allowed to publish tracks to SessionLocal.
+	NoPublish bool
+	// If true the peer will not be allowed to subscribe to other peers in SessionLocal.
+	NoSubscribe bool
+}
+
+// SessionProvider provides the SessionLocal to the sfu.Peer
 // This allows the sfu.SFU{} implementation to be customized / wrapped by another package
 type SessionProvider interface {
-	GetSession(sid string) (*Session, WebRTCTransportConfig)
+	GetSession(sid string) (Session, WebRTCTransportConfig)
 }
 
-// Peer represents a pair peer connection
-type Peer struct {
+type ChannelAPIMessage struct {
+	Method string      `json:"method"`
+	Params interface{} `json:"params,omitempty"`
+}
+
+// PeerLocal represents a pair peer connection
+type PeerLocal struct {
 	sync.Mutex
 	id       string
 	closed   atomicBool
-	session  *Session
+	session  Session
 	provider SessionProvider
 
 	publisher  *Publisher
@@ -59,15 +71,15 @@ type Peer struct {
 	negotiationPending  bool
 }
 
-// NewPeer creates a new Peer for signaling with the given SFU
-func NewPeer(provider SessionProvider) *Peer {
-	return &Peer{
+// NewPeer creates a new PeerLocal for signaling with the given SFU
+func NewPeer(provider SessionProvider) *PeerLocal {
+	return &PeerLocal{
 		provider: provider,
 	}
 }
 
 // Join initializes this peer for a given sessionID
-func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
+func (p *PeerLocal) Join(sid, uid string, config ...JoinConfig) error {
 	var conf JoinConfig
 	if len(config) > 0 {
 		conf = config[0]
@@ -82,12 +94,10 @@ func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
 		uid = cuid.New()
 	}
 	p.id = uid
-	var (
-		cfg WebRTCTransportConfig
-		err error
-	)
+	var err error
 
-	p.session, cfg = p.provider.GetSession(sid)
+	s, cfg := p.provider.GetSession(sid)
+	p.session = s
 
 	if !conf.NoSubscribe {
 		p.subscriber, err = NewSubscriber(uid, cfg)
@@ -132,13 +142,15 @@ func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
 	}
 
 	if !conf.NoPublish {
-		p.publisher, err = NewPublisher(p.session, uid, conf.Relay, cfg)
+		p.publisher, err = NewPublisher(uid, p.session, &cfg)
 		if err != nil {
 			return fmt.Errorf("error creating transport: %v", err)
 		}
-		for _, dc := range p.session.datachannels {
-			if err := p.subscriber.AddDatachannel(p, dc); err != nil {
-				return fmt.Errorf("error setting subscriber default dc datachannel")
+		if !conf.NoSubscribe {
+			for _, dc := range p.session.GetDCMiddlewares() {
+				if err := p.subscriber.AddDatachannel(p, dc); err != nil {
+					return fmt.Errorf("setting subscriber default dc datachannel: %w", err)
+				}
 			}
 		}
 
@@ -163,7 +175,7 @@ func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
 
 	p.session.AddPeer(p)
 
-	Logger.V(0).Info("Peer join session", "peer_id", p.id, "session_id", sid)
+	Logger.V(0).Info("PeerLocal join SessionLocal", "peer_id", p.id, "session_id", sid)
 
 	if !conf.NoSubscribe {
 		p.session.Subscribe(p)
@@ -172,12 +184,12 @@ func (p *Peer) Join(sid, uid string, config ...JoinConfig) error {
 }
 
 // Answer an offer from remote
-func (p *Peer) Answer(sdp webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func (p *PeerLocal) Answer(sdp webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	if p.publisher == nil {
 		return nil, ErrNoTransportEstablished
 	}
 
-	Logger.V(0).Info("Peer got offer", "peer_id", p.id)
+	Logger.V(0).Info("PeerLocal got offer", "peer_id", p.id)
 
 	if p.publisher.SignalingState() != webrtc.SignalingStateStable {
 		return nil, ErrOfferIgnored
@@ -188,22 +200,22 @@ func (p *Peer) Answer(sdp webrtc.SessionDescription) (*webrtc.SessionDescription
 		return nil, fmt.Errorf("error creating answer: %v", err)
 	}
 
-	Logger.V(0).Info("Peer send answer", "peer_id", p.id)
+	Logger.V(0).Info("PeerLocal send answer", "peer_id", p.id)
 
 	return &answer, nil
 }
 
 // SetRemoteDescription when receiving an answer from remote
-func (p *Peer) SetRemoteDescription(sdp webrtc.SessionDescription) error {
+func (p *PeerLocal) SetRemoteDescription(sdp webrtc.SessionDescription) error {
 	if p.subscriber == nil {
 		return ErrNoTransportEstablished
 	}
 	p.Lock()
 	defer p.Unlock()
 
-	Logger.V(0).Info("Peer got answer", "peer_id", p.id)
+	Logger.V(0).Info("PeerLocal got answer", "peer_id", p.id)
 	if err := p.subscriber.SetRemoteDescription(sdp); err != nil {
-		return fmt.Errorf("error setting remote description: %v", err)
+		return fmt.Errorf("setting remote description: %w", err)
 	}
 
 	p.remoteAnswerPending = false
@@ -217,33 +229,49 @@ func (p *Peer) SetRemoteDescription(sdp webrtc.SessionDescription) error {
 }
 
 // Trickle candidates available for this peer
-func (p *Peer) Trickle(candidate webrtc.ICECandidateInit, target int) error {
+func (p *PeerLocal) Trickle(candidate webrtc.ICECandidateInit, target int) error {
 	if p.subscriber == nil || p.publisher == nil {
 		return ErrNoTransportEstablished
 	}
-	Logger.V(0).Info("Peer trickle", "peer_id", p.id)
+	Logger.V(0).Info("PeerLocal trickle", "peer_id", p.id)
 	switch target {
 	case publisher:
 		if err := p.publisher.AddICECandidate(candidate); err != nil {
-			return fmt.Errorf("error setting ice candidate: %s", err)
+			return fmt.Errorf("setting ice candidate: %w", err)
 		}
 	case subscriber:
 		if err := p.subscriber.AddICECandidate(candidate); err != nil {
-			return fmt.Errorf("error setting ice candidate: %s", err)
+			return fmt.Errorf("setting ice candidate: %w", err)
 		}
 	}
 	return nil
 }
 
+func (p *PeerLocal) SendDCMessage(label string, msg []byte) error {
+	if p.subscriber == nil {
+		return fmt.Errorf("no subscriber for this peer")
+	}
+	dc := p.subscriber.DataChannel(label)
+
+	if dc == nil {
+		return fmt.Errorf("data channel %s doesn't exist", label)
+	}
+
+	if err := dc.SendText(string(msg)); err != nil {
+		return fmt.Errorf("failed to send message: %v", err)
+	}
+	return nil
+}
+
 // Close shuts down the peer connection and sends true to the done channel
-func (p *Peer) Close() error {
+func (p *PeerLocal) Close() error {
 	p.Lock()
 	defer p.Unlock()
 
 	p.closed.set(true)
 
 	if p.session != nil {
-		p.session.RemovePeer(p.id)
+		p.session.RemovePeer(p)
 	}
 	if p.publisher != nil {
 		p.publisher.Close()
@@ -256,19 +284,19 @@ func (p *Peer) Close() error {
 	return nil
 }
 
-func (p *Peer) Subscriber() *Subscriber {
+func (p *PeerLocal) Subscriber() *Subscriber {
 	return p.subscriber
 }
 
-func (p *Peer) Publisher() *Publisher {
+func (p *PeerLocal) Publisher() *Publisher {
 	return p.publisher
 }
 
-func (p *Peer) Session() *Session {
+func (p *PeerLocal) Session() Session {
 	return p.session
 }
 
 // ID return the peer id
-func (p *Peer) ID() string {
+func (p *PeerLocal) ID() string {
 	return p.id
 }

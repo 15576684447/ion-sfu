@@ -10,7 +10,6 @@ import (
 
 	"github.com/gammazero/deque"
 	"github.com/go-logr/logr"
-	log "github.com/pion/ion-log"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v3"
@@ -310,7 +309,6 @@ func (b *Buffer) calc(pkt []byte, arrivalTime int64) {
 		if err == errRTXPacket {
 			return
 		}
-		log.Errorf("buffer write err: %v", err)
 		return
 	}
 	if err = p.Unmarshal(pb); err != nil {
@@ -359,9 +357,11 @@ func (b *Buffer) calc(pkt []byte, arrivalTime int64) {
 	b.extPackets.PushBack(&ep)
 
 	// if first time update or the timestamp is later (factoring timestamp wrap around)
-	if (b.latestTimestampTime == 0) || IsLaterTimestamp(p.Timestamp, b.latestTimestamp) {
-		b.latestTimestamp = p.Timestamp
-		b.latestTimestampTime = arrivalTime
+	latestTimestamp := atomic.LoadUint32(&b.latestTimestamp)
+	latestTimestampTimeInNanosSinceEpoch := atomic.LoadInt64(&b.latestTimestampTime)
+	if (latestTimestampTimeInNanosSinceEpoch == 0) || IsLaterTimestamp(p.Timestamp, latestTimestamp) {
+		atomic.StoreUint32(&b.latestTimestamp, p.Timestamp)
+		atomic.StoreInt64(&b.latestTimestampTime, arrivalTime)
 	}
 
 	arrival := uint32(arrivalTime / 1e6 * int64(b.clockRate/1e3))

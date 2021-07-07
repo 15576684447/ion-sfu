@@ -33,7 +33,11 @@ bestqualityfirst = true
 # EXPERIMENTAL enable temporal layer change is currently an experimental feature,
 # enable only for testing.
 enabletemporallayer = false
+
 [webrtc]
+# Single port, portrange will not work if you enable this
+# singleport = 5000
+
 # Range of ports that ion accepts WebRTC traffic on
 # Format: [min, max]   and max - min >= 100
 portrange = [5000, 5200]
@@ -65,6 +69,14 @@ mdns = true
 # external users.
 # nat1to1 = ["1.2.3.4"]
 # icelite = true
+
+[webrtc.timeouts]
+# The duration in [sec] without network activity before a ICE Agent is considered disconnected
+disconnected = 5
+# The duration in [sec] without network activity before a ICE Agent is considered failed after disconnected
+failed = 25
+# How often in [sec] the ICE Agent sends extra traffic if there is no activity, if media is flowing no traffic will be sent
+keepalive = 2
 
 [turn]
 # Enables embeded turn server

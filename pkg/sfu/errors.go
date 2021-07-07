@@ -3,7 +3,7 @@ package sfu
 import "errors"
 
 var (
-	// Peer erors
+	// PeerLocal erors
 	errPeerConnectionInitFailed = errors.New("pc init failed")
 	errCreatingDataChannel      = errors.New("failed to create data channel")
 	// router errors
@@ -11,4 +11,7 @@ var (
 	// Helpers errors
 	errShortPacket = errors.New("packet is not large enough")
 	errNilPacket   = errors.New("invalid nil packet")
+
+	ErrSpatialNotSupported = errors.New("current track does not support simulcast/SVC")
+	ErrSpatialLayerBusy    = errors.New("a spatial layer change is in progress, try latter")
 )

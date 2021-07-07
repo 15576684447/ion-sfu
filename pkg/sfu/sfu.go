@@ -2,6 +2,7 @@ package sfu
 
 import (
 	"math/rand"
+	"net"
 	"os"
 	"runtime"
 	"sync"
@@ -32,21 +33,30 @@ type Candidates struct {
 	NAT1To1IPs []string `mapstructure:"nat1to1"`
 }
 
-// WebRTCTransportConfig represents configuration options
+// WebRTCTransportConfig represents Configuration options
 type WebRTCTransportConfig struct {
-	configuration webrtc.Configuration
-	setting       webrtc.SettingEngine
-	router        RouterConfig
-	relay         *relay.Provider
+	Configuration webrtc.Configuration
+	Setting       webrtc.SettingEngine
+	Router        RouterConfig
+	Relay         func(meta relay.PeerMeta, signal []byte) ([]byte, error)
+	BufferFactory *buffer.Factory
+}
+
+type WebRTCTimeoutsConfig struct {
+	ICEDisconnectedTimeout int `mapstructure:"disconnected"`
+	ICEFailedTimeout       int `mapstructure:"failed"`
+	ICEKeepaliveInterval   int `mapstructure:"keepalive"`
 }
 
 // WebRTCConfig defines parameters for ice
 type WebRTCConfig struct {
-	ICEPortRange []uint16          `mapstructure:"portrange"`
-	ICEServers   []ICEServerConfig `mapstructure:"iceserver"`
-	Candidates   Candidates        `mapstructure:"candidates"`
-	SDPSemantics string            `mapstructure:"sdpsemantics"`
-	MDNS         bool              `mapstructure:"mdns"`
+	ICESinglePort int                  `mapstructure:"singleport"`
+	ICEPortRange  []uint16             `mapstructure:"portrange"`
+	ICEServers    []ICEServerConfig    `mapstructure:"iceserver"`
+	Candidates    Candidates           `mapstructure:"candidates"`
+	SDPSemantics  string               `mapstructure:"sdpsemantics"`
+	MDNS          bool                 `mapstructure:"mdns"`
+	Timeouts      WebRTCTimeoutsConfig `mapstructure:"timeouts"`
 }
 
 // Config for base SFU
@@ -56,10 +66,11 @@ type Config struct {
 		WithStats bool  `mapstructure:"withstats"`
 	} `mapstructure:"sfu"`
 	WebRTC        WebRTCConfig `mapstructure:"webrtc"`
-	Router        RouterConfig `mapstructure:"router"`
+	Router        RouterConfig `mapstructure:"Router"`
 	Turn          TurnConfig   `mapstructure:"turn"`
-	Relay         *relay.Provider
+	Relay         func(meta relay.PeerMeta, signal []byte) ([]byte, error)
 	BufferFactory *buffer.Factory
+	TurnAuth      func(username string, realm string, srcAddr net.Addr) ([]byte, bool)
 }
 
 var (
@@ -69,12 +80,11 @@ var (
 // SFU represents an sfu instance
 type SFU struct {
 	sync.RWMutex
-	webrtc        WebRTCTransportConfig
-	turn          *turn.Server
-	sessions      map[string]*Session
-	datachannels  []*Datachannel
-	bufferFactory *buffer.Factory
-	withStats     bool
+	webrtc       WebRTCTransportConfig
+	turn         *turn.Server
+	sessions     map[string]Session
+	datachannels []*Datachannel
+	withStats    bool
 }
 
 // NewWebRTCTransportConfig parses our settings and returns a usable WebRTCTransportConfig for creating PeerConnections
@@ -82,19 +92,30 @@ func NewWebRTCTransportConfig(c Config) WebRTCTransportConfig {
 	se := webrtc.SettingEngine{}
 	se.DisableMediaEngineCopy(true)
 
-	var icePortStart, icePortEnd uint16
-
-	if c.Turn.Enabled && len(c.Turn.PortRange) == 0 {
-		icePortStart = sfuMinPort
-		icePortEnd = sfuMaxPort
-	} else if len(c.WebRTC.ICEPortRange) == 2 {
-		icePortStart = c.WebRTC.ICEPortRange[0]
-		icePortEnd = c.WebRTC.ICEPortRange[1]
-	}
-
-	if icePortStart != 0 || icePortEnd != 0 {
-		if err := se.SetEphemeralUDPPortRange(icePortStart, icePortEnd); err != nil {
+	if c.WebRTC.ICESinglePort != 0 {
+		Logger.Info("Listen on ", "single-port", c.WebRTC.ICESinglePort)
+		udpListener, err := net.ListenUDP("udp", &net.UDPAddr{
+			IP:   net.IP{0, 0, 0, 0},
+			Port: c.WebRTC.ICESinglePort,
+		})
+		if err != nil {
 			panic(err)
+		}
+		se.SetICEUDPMux(webrtc.NewICEUDPMux(nil, udpListener))
+	} else {
+		var icePortStart, icePortEnd uint16
+
+		if c.Turn.Enabled && len(c.Turn.PortRange) == 0 {
+			icePortStart = sfuMinPort
+			icePortEnd = sfuMaxPort
+		} else if len(c.WebRTC.ICEPortRange) == 2 {
+			icePortStart = c.WebRTC.ICEPortRange[0]
+			icePortEnd = c.WebRTC.ICEPortRange[1]
+		}
+		if icePortStart != 0 || icePortEnd != 0 {
+			if err := se.SetEphemeralUDPPortRange(icePortStart, icePortEnd); err != nil {
+				panic(err)
+			}
 		}
 	}
 
@@ -122,26 +143,39 @@ func NewWebRTCTransportConfig(c Config) WebRTCTransportConfig {
 		sdpSemantics = webrtc.SDPSemanticsPlanB
 	}
 
+	if c.WebRTC.Timeouts.ICEDisconnectedTimeout == 0 &&
+		c.WebRTC.Timeouts.ICEFailedTimeout == 0 &&
+		c.WebRTC.Timeouts.ICEKeepaliveInterval == 0 {
+		Logger.Info("No webrtc timeouts found in config, using default ones")
+	} else {
+		se.SetICETimeouts(
+			time.Duration(c.WebRTC.Timeouts.ICEDisconnectedTimeout)*time.Second,
+			time.Duration(c.WebRTC.Timeouts.ICEFailedTimeout)*time.Second,
+			time.Duration(c.WebRTC.Timeouts.ICEKeepaliveInterval)*time.Second,
+		)
+	}
+
 	w := WebRTCTransportConfig{
-		configuration: webrtc.Configuration{
+		Configuration: webrtc.Configuration{
 			ICEServers:   iceServers,
 			SDPSemantics: sdpSemantics,
 		},
-		setting: se,
-		router:  c.Router,
-		relay:   c.Relay,
+		Setting:       se,
+		Router:        c.Router,
+		Relay:         c.Relay,
+		BufferFactory: c.BufferFactory,
 	}
 
 	if len(c.WebRTC.Candidates.NAT1To1IPs) > 0 {
-		w.setting.SetNAT1To1IPs(c.WebRTC.Candidates.NAT1To1IPs, webrtc.ICECandidateTypeHost)
+		w.Setting.SetNAT1To1IPs(c.WebRTC.Candidates.NAT1To1IPs, webrtc.ICECandidateTypeHost)
 	}
 
 	if !c.WebRTC.MDNS {
-		w.setting.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+		w.Setting.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	}
 
 	if c.SFU.WithStats {
-		w.router.WithStats = true
+		w.Router.WithStats = true
 		stats.InitStats()
 	}
 
@@ -159,7 +193,6 @@ func init() {
 
 // NewSFU creates a new sfu instance
 func NewSFU(c Config) *SFU {
-
 	// Init random seed
 	rand.Seed(time.Now().UnixNano())
 	// Init ballast
@@ -172,18 +205,13 @@ func NewSFU(c Config) *SFU {
 	w := NewWebRTCTransportConfig(c)
 
 	sfu := &SFU{
-		webrtc:        w,
-		sessions:      make(map[string]*Session),
-		withStats:     c.Router.WithStats,
-		bufferFactory: c.BufferFactory,
-	}
-
-	if c.Relay != nil {
-		c.Relay.SetSettingEngine(w.setting)
+		webrtc:    w,
+		sessions:  make(map[string]Session),
+		withStats: c.Router.WithStats,
 	}
 
 	if c.Turn.Enabled {
-		ts, err := InitTurnServer(c.Turn, nil)
+		ts, err := InitTurnServer(c.Turn, c.TurnAuth)
 		if err != nil {
 			Logger.Error(err, "Could not init turn server err")
 			os.Exit(1)
@@ -195,9 +223,9 @@ func NewSFU(c Config) *SFU {
 	return sfu
 }
 
-// NewSession creates a new session instance
-func (s *SFU) newSession(id string) *Session {
-	session := NewSession(id, s.bufferFactory, s.datachannels, s.webrtc)
+// NewSession creates a new SessionLocal instance
+func (s *SFU) newSession(id string) Session {
+	session := NewSession(id, s.datachannels, s.webrtc).(*SessionLocal)
 
 	session.OnClose(func() {
 		s.Lock()
@@ -221,13 +249,13 @@ func (s *SFU) newSession(id string) *Session {
 }
 
 // GetSession by id
-func (s *SFU) getSession(id string) *Session {
+func (s *SFU) getSession(id string) Session {
 	s.RLock()
 	defer s.RUnlock()
 	return s.sessions[id]
 }
 
-func (s *SFU) GetSession(sid string) (*Session, WebRTCTransportConfig) {
+func (s *SFU) GetSession(sid string) (Session, WebRTCTransportConfig) {
 	session := s.getSession(sid)
 	if session == nil {
 		session = s.newSession(sid)
@@ -242,7 +270,7 @@ func (s *SFU) NewDatachannel(label string) *Datachannel {
 }
 
 // GetSessions return all sessions
-func (s *SFU) GetSessions() map[string]*Session {
+func (s *SFU) GetSessions() map[string]Session {
 	s.RLock()
 	defer s.RUnlock()
 	return s.sessions
